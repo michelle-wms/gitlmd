@@ -8,7 +8,7 @@ library(caret)
 
 setwd("C:/Users/806826/Documents/Data/LMD prediction")
 #save.image(file="lmd.rda")
-#load(file = "lmd.rda")
+#load(file = "lmd.rda") lalala
 
 
 # company -----------------------------------------------------------------
