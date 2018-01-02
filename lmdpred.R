@@ -8,7 +8,7 @@ library(caret)
 
 setwd("C:/Users/806826/Documents/Data/LMD prediction")
 #save.image(file="lmd.rda")
-#load(file = "lmd.rda") lalala
+#load(file = "lmd.rda") 
 
 
 # company -----------------------------------------------------------------
@@ -64,7 +64,7 @@ lerror <- lerror %>%
 
 lift <- read.csv("Lifts Oct17.csv")
 
-keepcol <- c("lift_id", "mco_id", "building_id", "landings", "speed", "commission_date", "load_capacity", "person_capacity",
+keepcol <- c("lift_id", "make_code", "mco_id", "building_id", "landings", "speed", "commission_date", "load_capacity", "person_capacity",
              "drive_type", "car_control_1", "car_control_2", "dvr_type")
 lift <- lift[, names(lift) %in% keepcol]
 
@@ -114,6 +114,8 @@ lerror_faultdesc <- lerror %>%
   left_join(faultdesc, by = "f_nbr") %>%
   filter(Remarks == "Breakdown") #TAKE ONLY BREAKDOWN RESULTS. 
 
+lerror_faultdesc$breakdown <- ifelse(lerror_faultdesc$Remarks=="Breakdown", 1, 0) 
+
 # making target label as "Breakdown"/"OK" 
 lerror_faultdesc$f_nbr <- as.factor(lerror_faultdesc$f_nbr)
 lerror_faultdesc$Remarks <- as.character(lerror_faultdesc$Remarks)
@@ -128,41 +130,26 @@ lerror_faultdesc <- lerror_faultdesc %>%
 
 lerror_faultdesc <- na.omit(lerror_faultdesc)
 
-# 1) day of week (mon-sun)
 prejoin <- lerror_faultdesc %>%
-  mutate(f_day = weekdays(f_date))
-
-# 2) time of fault (am/pm)
-prejoin <- prejoin %>%
-  mutate(f_hour = format(f_time, "%H"))
-
-# 3) breakdown count in past 
-lerror_faultdesc$breakdown <- ifelse(lerror_faultdesc$Remarks=="Breakdown", 1, 0) 
-
-prejoin <- lerror_faultdesc %>% 
+  mutate(f_day = weekdays(f_date)) %>%
+  mutate(f_day = as.factor(f_day)) %>% # 1) monday to sunday
+  mutate(f_hour = format(f_time, "%H")) %>%
+  mutate(f_hour = as.numeric(f_hour)) # # 2) time of fault (am/pm)
+  mutate(f_year = as.factor(format(f_time, "%Y"))) %>% # year
+  mutate(f_mth = as.factor(format(f_time, "%m"))) %>% # month
+  mutate(f_day = as.numeric(format(f_time, "%d"))) %>%  # day
   group_by(lift_id) %>%
   arrange(lift_id, f_date) %>%
-  mutate(hist_count = cumsum(breakdown))  
+  mutate(hist_count = cumsum(breakdown)) %>% # 4) no. days from previous breakdown     
 
-# 4) no. days from previous breakdown
-prejoin <- prejoin %>%
-  mutate(prevlag = f_date - lag(f_date))
-
-# 5) frequency of breakdown ie. time it takes for a breakdown to occur
 prejoin <- prejoin %>% 
-  mutate(freq = (f_date - min(f_date))/hist_count) 
-
-# 6) average weekly breakdowns
-
-# 7) no days till next BD 
-prejoin <- prejoin %>% 
-  mutate(days_nextbd = lead(f_date)-f_date)
+  mutate(freq = as.numeric((f_date - min(f_date))/hist_count)) %>% # 5) frequency of breakdown ie. time it takes for a breakdown to occur
+  mutate(days_nextbd = as.numeric(lead(f_date)-f_date)) # 6) no days till next BD 
 
 # Y2 = BD in next 7 days (y/n)
 prejoin <- prejoin %>% 
-  mutate(sevendays = ifelse((lead(f_date)-f_date)<8, 1, 0))
+  mutate(sevendays = ifelse((lead(f_date)-f_date)<8 & (lead(f_date)-f_date)>0, "7d_bd", "7d_ok"))
 
-# Y3 = BD in next 14 days (y/n)
 
 
 # Joining together  -------------------------------------------------------------
@@ -175,7 +162,8 @@ prejoin <- prejoin %>%
 alljoin <- prejoin %>% 
   left_join(lift, by= "lift_id") %>% 
   left_join(building, by = "building_id") %>%
-  left_join(company, by ="mco_id") 
+  left_join(company, by ="mco_id") %>%
+  mutate(building_age = as.numeric(f_date - building_date))
 
 # VARIABLES: 
   # 1) lift: lift_id, mco_id, building_id, landings, speed, commission_date, load_capacity, person_capacity,
@@ -183,12 +171,16 @@ alljoin <- prejoin %>%
   # 2) building: building_id, town_council_code, storey, building_type, building_date, total_dwell_unit
   # 3) company: mco_id, name 
 
+# pax per landing
+alljoin <- alljoin %>%
+  mutate(unitsperlanding = total_dwell_unit/landings)
+
 # prepare data for modeling
-alljoin2 <- alljoin[, -which(names(alljoin) %in% c("building_id","f_nbr","breakdown","lift_id", "rn", "insert_date", "report_desc", "Remarks", "building_type"))]
+alljoin2 <- alljoin[, -which(names(alljoin) %in% c("car_control_2","days_nextbd","f_date","building_date","f_time","comm_date","building_id","f_nbr","breakdown","lift_id", "rn", "insert_date", "report_desc", "Remarks", "building_type"))]
 alljoin2 <- alljoin2 %>% 
   select(sevendays, everything()) %>%
   mutate(sevendays = as.factor(sevendays)) %>%
-  mutate(mco_id = as.factor(mco_id))
+  mutate(mco_id = as.character(mco_id))
 
 
 
@@ -199,32 +191,42 @@ alljoin2 <- alljoin2 %>%
 rows <- sample(nrow(alljoin2))
 alljoin2 <- alljoin2[rows,]
 alljoin2 <- na.omit(alljoin2)
-levels(alljoin2$sevendays) <- make.names(levels(factor(alljoin2$sevendays)))
+#levels(alljoin2$sevendays) <- make.names(levels(factor(alljoin2$sevendays)))
 
-# 80/20 split
+# 70/30 split
 set.seed(42)
 split <- round(nrow(alljoin2) * .7)
 train <- alljoin2[1:split,]
 test <- alljoin2[(split+1):nrow(alljoin2),]
+train_small <- sample_frac(train, 0.1)
 
-#Confusion matrix                                                      
-confusionMatrix(predicted, actual)
+# Rpart (decision trees) and random forest
+set.seed(100)
+library(rpart)
+tree <- rpart(sevendays ~., train, control=rpart.control(cp=0.001))
+plot(tree, uniform=TRUE, margin=0.5)
+text(tree)
+tree                   
 
-#ROC 
-colAUC(predicted_probabilities, test[["Class"]], plotROC = TRUE)
+set.seed(100)
+library(randomForest)
+rf <- randomForest(sevendays~., train) 
+error_df <- data.frame(error_rate = rf$err.rate[,"OOB"], num_trees = 1:rf$ntree)
+ggplot(error_df, aes(x=num_trees, y=error_rate)) + geom_line()
+
+set.seed(100)
+rf <- randomForest(sevendays~., train, ntree=150) 
+beep()
+
+# Gradient boosting
+library(xgboost)
+predictors <- data.matrix(train[, c("x1","x2", "x3")])
+label <- as.numeric(train[, "sevendays"])
 
 
-library(doParallel)
-nThreads <- detectCores(logical = TRUE)
-cl <- makeCluster(nThreads)
-registerDoParallel(cl)
-#fit1 <- train(bbbDescr, logBBB, "rf")
-stopCluster(cl)
-registerDoSEQ()
 
-
-set.seed(135)
-#glm with ROC output 
+set.seed(100)
+#rf with ROC output 
 myControl <- trainControl(
   method = "cv",
   number = 5,
@@ -233,23 +235,62 @@ myControl <- trainControl(
   verboseIter = TRUE
 )
 
-model <- train(sevendays~ ., train, ntree = 200, method = "ranger",
-               trControl = myControl)
+model <- train(sevendays~., train_small, 
+               method = "glm", 
+               ntree =200,
+               trControl = myControl,
+               preProcess = c("nzv", "knnImpute")
+               )
 model
+plot(varImp(model, scale = TRUE, top=20))
 
+
+Random Forest 
+
+16667 samples
+22 predictor
+2 classes: 'BD', 'OK' 
+
+Pre-processing: nearest neighbor imputation (68), centered (68), scaled (68), remove (29) 
+Resampling: Cross-Validated (5 fold) 
+Summary of sample sizes: 13333, 13333, 13333, 13335, 13334 
+Resampling results across tuning parameters:
+  
+  mtry  ROC        Sens         Spec     
+2    0.6172295  0.004984855  0.9993250
+49    0.6293838  0.202746096  0.9287940
+97    0.6268178  0.197137540  0.9277821
+
+ROC was used to select the optimal model using the largest value.
+The final value used for the model was mtry = 49.
 
 # random forest
-
-set.seed(435)
+set.seed(153)
 model <- train(
   sevendays~., 
   tuneLength = 1,
-  data = train, method = "ranger",
+  data = train, method = "rf",
   ntree = 200,
   trControl = trainControl(method = "cv", number = 5, verboseIter = TRUE)
 )
   
 model
+
+Random Forest 
+
+151631 samples
+22 predictor
+2 classes: 'No', 'Yes' 
+
+No pre-processing
+Resampling: Cross-Validated (5 fold) 
+Summary of sample sizes: 121305, 121305, 121305, 121304, 121305 
+Resampling results:
+  
+  Accuracy   Kappa    
+0.7213564  0.2178725
+
+Tuning parameter 'mtry' was held constant at a value of 26
 
 # Using tunelength to find best mtry 
 model <- train(
@@ -270,6 +311,17 @@ model <- train(
 plot(model)
 
 
+
+#Confusion matrix                                                      
+confusionMatrix(predicted, actual)
+
+#ROC 
+colAUC(predicted_probabilities, test[["Class"]], plotROC = TRUE)
+
+
+
+
+
 # 1) Random Forest Modeling ----------------------------------------------------------------
 
 # Use randomForest package 
@@ -277,7 +329,7 @@ require(randomForest)
 rf.train.1 <- train[, -1]
 rf.label <- train[, 1]
 set.seed(1234)
-rf.1 <- randomForest(sevendays~., train, importance = TRUE, ntree = 500)
+rf.1 <- randomForest(sevendays~., train_small, importance = TRUE, ntree = 200)
 rf.1
 varImpPlot(rf.1) #speed has no predictive power. prolly due to uneven distribution  
 
@@ -318,3 +370,12 @@ p_class <- ifelse(p>0.5, "BD", "OK") #threshold: 0.1 means high true positive an
 #                     high false positive
 #threshold: 0.9 means low true positive and 
 #                     low false positive
+
+
+library(doParallel)
+nThreads <- detectCores(logical = TRUE)
+cl <- makeCluster(nThreads)
+registerDoParallel(cl)
+#fit1 <- train(bbbDescr, logBBB, "rf")
+stopCluster(cl)
+registerDoSEQ()
