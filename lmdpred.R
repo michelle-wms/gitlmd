@@ -146,7 +146,7 @@ prejoin <- prejoin %>%
 
 # Y2 = BD in next 7 days (y/n)
 prejoin <- prejoin %>% 
-  mutate(sevendays = ifelse((lead(f_date)-f_date)<8 & (lead(f_date)-f_date)>0, "7d_bd", "7d_ok"))
+  mutate(sevendays = ifelse((lead(f_date)-f_date)<8 & (lead(f_date)-f_date)>0, 1, 0))
 
 
 
@@ -178,11 +178,12 @@ alljoin2 <- alljoin[, -which(names(alljoin) %in% c("mco_id","car_control_2","day
 alljoin2 <- alljoin2 %>% 
   select(sevendays, everything()) %>%
   mutate(sevendays = as.factor(sevendays)) %>%
-  rename(mco_name = short_name)
+  rename(mco_name = short_name) 
 
 
 
-# Datacamp  ---------------------------------------------------------------
+
+## Preparing training data  -------------------------------------------------
 
 # jumble up the data
 rows <- sample(nrow(alljoin2))
@@ -197,106 +198,61 @@ train <- alljoin2[1:split,]
 test <- alljoin2[(split+1):nrow(alljoin2),]
 train_small <- sample_frac(train, 0.1)
 
-# Rpart (decision trees) and random forest
-set.seed(100)
-library(rpart)
-tree <- rpart(sevendays ~., train, control=rpart.control(cp=0.001))
-plot(tree, uniform=TRUE, margin=0.5)
-text(tree)
-tree                   
+# Downsampling
+set.seed(1103)
+ds_train <- downSample(x = train[,-1], y = train$sevendays , yname = "sevendays")
+table(ds_train$sevendays)
 
-set.seed(100)
-library(randomForest)
-rf <- randomForest(sevendays~., train) 
-error_df <- data.frame(error_rate = rf$err.rate[,"OOB"], num_trees = 1:rf$ntree)
-ggplot(error_df, aes(x=num_trees, y=error_rate)) + geom_line()
+library(DMwR)
+set.seed(1103)
+smote_train <- SMOTE(sevendays ~ ., data = train)
+table(smote_train$sevendays)
 
-set.seed(100)
-rf <- randomForest(sevendays~., train, ntree=150) 
-beep()
+## Modeling ----------------------------------------------------------------
+
 
 # Gradient boosting
 library(xgboost)
-predictors <- data.matrix(train[, c("x1","x2", "x3")])
-label <- as.numeric(train[, "sevendays"])
-
-
-
 set.seed(100)
-#rf with ROC output 
-myControl <- trainControl(
-  method = "cv",
-  number = 5,
-  summaryFunction = twoClassSummary,
-  classProbs = TRUE, # IMPORTANT!
-  verboseIter = TRUE
-)
+predictors <- data.matrix(train[, -1]) 
+label <- as.numeric(train[["sevendays"]])-1 
 
-model <- train(sevendays~., train_small, 
-               method = "glm", 
-               ntree =200,
-               trControl = myControl,
-               preProcess = c("nzv", "knnImpute")
-               )
-model
-plot(varImp(model, scale = TRUE, top=20))
+xgb <- xgboost(data=predictors, label=label,
+               objective = "binary:logistic",
+               subsample=.63, 
+               eta=0.1,
+               nrounds=100,
+               eval_metric = "auc")
+xgb
 
+pred_prob <- predict(xgb, data.matrix(test[, -1]))
+prediction <- as.numeric(pred_prob > 0.5)
+testlabel<- as.numeric(test[["sevendays"]])-1 
 
-Random Forest 
+require(caret)
+confusionMatrix(prediction, testlabel)
+require(caTools)
+colAUC(pred_prob, testlabel, plotROC = TRUE)
 
-16667 samples
-22 predictor
-2 classes: 'BD', 'OK' 
+# Cross validation 
+set.seed(100)
+cv <- xgb.cv(data=predictors, label=label,
+               objective = "binary:logistic",
+               subsample=.63, 
+               eta=0.1,
+               nrounds=100,
+               nfold = 5,
+               
+               eval_metric = "auc")
+pred_prob <- predict(cv, data.matrix(test[, -1]))
+prediction <- as.numeric(pred_prob > 0.6)
+testlabel<- as.numeric(test[["sevendays"]])-1 
 
-Pre-processing: nearest neighbor imputation (68), centered (68), scaled (68), remove (29) 
-Resampling: Cross-Validated (5 fold) 
-Summary of sample sizes: 13333, 13333, 13333, 13335, 13334 
-Resampling results across tuning parameters:
-  
-  mtry  ROC        Sens         Spec     
-2    0.6172295  0.004984855  0.9993250
-49    0.6293838  0.202746096  0.9287940
-97    0.6268178  0.197137540  0.9277821
+require(caret)
+confusionMatrix(prediction, testlabel)
+require(caTools)
+colAUC(pred_prob, testlabel, plotROC = TRUE)
 
-ROC was used to select the optimal model using the largest value.
-The final value used for the model was mtry = 49.
-
-# random forest
-set.seed(153)
-model <- train(
-  sevendays~., 
-  tuneLength = 1,
-  data = train, method = "rf",
-  ntree = 200,
-  trControl = trainControl(method = "cv", number = 5, verboseIter = TRUE)
-)
-  
-model
-
-Random Forest 
-
-151631 samples
-22 predictor
-2 classes: 'No', 'Yes' 
-
-No pre-processing
-Resampling: Cross-Validated (5 fold) 
-Summary of sample sizes: 121305, 121305, 121305, 121304, 121305 
-Resampling results:
-  
-  Accuracy   Kappa    
-0.7213564  0.2178725
-
-Tuning parameter 'mtry' was held constant at a value of 26
-
-# Using tunelength to find best mtry 
-model <- train(
-  sevendays~.,
-  tuneLength = 3,
-  data = alljoin2, method = "ranger",
-  trControl = trainControl(method = "cv", number = 5, verboseIter = TRUE)
-)
-plot(model) #the lowest RSME gives the best mtry value 
 
 # Using tunegrid to find best mtry
 model <- train(
@@ -316,6 +272,44 @@ confusionMatrix(predicted, actual)
 colAUC(predicted_probabilities, test[["Class"]], plotROC = TRUE)
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# # Decision Tree (rpart) -------------------------------------------------
+
+set.seed(100)
+library(rpart)
+tree <- rpart(sevendays ~., train, control=rpart.control(cp=0.001))
+plot(tree, uniform=TRUE, margin=0.5)
+text(tree)
+tree                   
+
+
+set.seed(100)
+library(randomForest)
+rf <- randomForest(sevendays~., train) 
+error_df <- data.frame(error_rate = rf$err.rate[,"OOB"], num_trees = 1:rf$ntree)
+ggplot(error_df, aes(x=num_trees, y=error_rate)) + geom_line()
 
 
 
