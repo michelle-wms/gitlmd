@@ -1,81 +1,42 @@
 setwd("C:/Users/806826/Documents/Data/LMD prediction")
+library(dplyr)
 #save.image(file="lmd.rda")
 #load(file = "lmd.rda") 
 
-
-# Combining all sensor data  ----------------------------------------------
-
-
-library(data.table)
-library(readbulk)
-
-path <- "C:/Users/806826/Documents/Data/LMD prediction/sensor_jantoapr"
-
-multmerge = function(path){
-  filenames=list.files(path=path, full.names=TRUE)
-  rbindlist(lapply(filenames, read.table))
-}
-
-allsensor <- multmerge(path)
-allsensor <- data.frame(str_split_fixed(allsensor$V1, ",", 9))
-#no_zeros <- apply(allsensor, 1, function(x) all(x !=0 ))
-#allsensor1 <- allsensor[no_zeros,]
-
-colnames(allsensor) <- c("deviceid", "tripdate", "tripid", "accrms", "accxrms", "accyrms", "acczrms", "endtime", "starttime")
-allsensor1 <- allsensor[-1,]
-
-length(unique(allsensor$deviceid))
-
-
 # Analyzing data  ---------------------------------------------------------
+sensors3 <- read.csv("sensors3.csv")
 
-sensors <- read.csv("allsensor.csv")
-sensors <- sensors[-1,-1]
-s <- sensors %>%
-  mutate(endtime = as.character(endtime)) %>%
-  mutate(starttime = as.character(starttime)) %>%
-  mutate(endtime = as.numeric(endtime)) %>%
-  mutate(starttime = as.numeric(starttime)) %>%
-  mutate(duration = (endtime-starttime)/1000)
+# Remove outliers of duration < 2 seconds
+sensors3 <- sensors3[-which(sensors3$duration<2),]
 
-# List of deviceid with more than 50% of <2 seconds duration
-less2sec <- s %>%
+sensors4 <- sensors3 %>%
+  group_by(deviceid, tripdate) %>%
+  summarize(tripcount = max(tripid), 
+            duration_sd = sd(duration), 
+            duration_mean = mean(duration),
+            duration_median = median(duration), 
+            rms_sd = sd(accrms),
+            rms_mean = mean(accrms),
+            rms_median = median(accrms)
+            )
+sensors4 <- data.frame(sensors4)
+  
+
+# Outliers that are 2sec or less, and more than 2 mins 
+outliers <- sensors3 %>%
   group_by(deviceid) %>%
-  mutate(percent = mean(duration < 2)) %>%
-  distinct(deviceid, percent) %>%
-  arrange(desc(percent))
+  mutate(less3sec = mean(duration < 3)) %>%
+  mutate(more2min = mean(duration >120)) %>%
+  distinct(deviceid, less3sec, more2min) %>%
+  arrange(desc(more2min))
 
-View(less2sec)
-               
+View(outliers)
+
+
+# Visualisation -----------------------------------------------------------
+
 library(ggplot2)
 ggplot(sensors, aes(x=duration), geom_density())
 boxplot(sensors$duration)
 
 
-
-library(dplyr)
-sensors1 <- sensors %>% sample_frac(0.1)
-sensors1 <- sensors1 %>% 
-  mutate(deviceid = as.character(deviceid)) %>%
-  mutate(tripdate = as.Date(tripdate)) %>%
-  mutate(tripid = as.numeric(tripid)) %>%
-  mutate(accrms = as.numeric(accrms)) %>%
-  mutate(accxrms = as.numeric(accxrms)) %>%
-  mutate(accyrms = as.numeric(accyrms)) %>%
-  mutate(acczrms = as.numeric(acczrms)) %>%
-  mutate(endtime = as.integer(endtime)) %>%
-  mutate(starttime = as.integer(starttime)) %>%
-  mutate(duration = endtime-starttime) #new feature
-
-sensors3 <- sensors %>% sample_frac(0.3)
-sensors3 <- sensors3 %>% 
-  mutate(deviceid = as.character(deviceid)) %>%
-  mutate(tripdate = as.Date(tripdate)) %>%
-  mutate(tripid = as.numeric(tripid)) %>%
-  mutate(accrms = as.numeric(accrms)) %>%
-  mutate(accxrms = as.numeric(accxrms)) %>%
-  mutate(accyrms = as.numeric(accyrms)) %>%
-  mutate(acczrms = as.numeric(acczrms)) %>%
-  mutate(endtime = as.integer(endtime)) %>%
-  mutate(starttime = as.integer(starttime)) %>%
-  mutate(duration = endtime-starttime) #new feature

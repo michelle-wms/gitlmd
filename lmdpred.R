@@ -5,64 +5,67 @@ library(lattice)
 library(data.table)
 library(readbulk)
 library(caret)
+library(here)
 
-setwd("C:/Users/806826/Documents/Data/LMD prediction")
-#save.image(file="lmd.rda")
-#load(file = "lmd.rda") 
+#here::here()
+#save.image(file=".Rdata")    load(file = "lmd.rda") 
 
+# Cleaning ----------------------------------------------------------------
 
-# company -----------------------------------------------------------------
+##############-----------------  COMPANY
 
-company <- read.csv("Company.csv")
+company <- read.csv("LMD Data/Company.csv")
 company$mco_id <- as.factor(company$mco_id)
 company <- company[,c(1,3)]
 
-##company: mco_id, name 
+# variables: mco_id, name 
 
 
-# faultdesc  ----------------------------------------------------------------
+##############-----------------  FAULTDESC
 
-faultdesc <- read.csv("Fault_Desc.csv")
+faultdesc <- read.csv("LMD Data/Fault_Desc.csv")
 
 colnames(faultdesc)[1] <- "f_nbr"
 faultdesc$f_nbr <- as.factor(faultdesc$f_nbr)
 
-##faultdesc: f_nbr, Remarks 
+faultdesc<- faultdesc %>% 
+  filter(Remarks == "Breakdown", Mechanical_or_Human != "h") %>%
+  select(f_nbr, Remarks) 
+
+# variables: f_nbr, Remarks 
 
 
+##############----------------- lifterror
 
-# lifterror ---------------------------------------------------------------
+#path <- "Lift Error Data - 2012 to 2017"
 
-path <- "C:/Users/806826/Documents/Data/LMD prediction/5yrs data"
+#multmerge = function(path){
+#  filenames=list.files(path=path, full.names=TRUE)
+#  rbindlist(lapply(filenames, fread))
+#}
 
-multmerge = function(path){
-  filenames=list.files(path=path, full.names=TRUE)
-  rbindlist(lapply(filenames, fread))
-}
-  
-lifterror <- multmerge(path)
+#lifterror <- multmerge(path)
 
-#which(colnames(lifterror)=="lift_id")
-#which(colnames(lifterror)=="fault_nbr")
-#which(colnames(lifterror)=="insert_date")
-#which(colnames(lifterror)=="report_desc")
+#saveRDS(lifterror, here("lifterror.rds"))
+lifterror <- readRDS(here("lifterror.rds"))
 
 lerror <- lifterror[,c(8,11,12,26)]
 
-colnames(lerror)[which(names(lerror) == "fault_nbr")] <- "f_nbr"
-#lerror$f_nbr <- gsub('.{2}$', '', lerror$f_nbr)  #remove last 2 chars
+colnames(lerror)[which(names(lerror) == "fault_nbr")] <- "f_nbr" #lerror$f_nbr <- gsub('.{2}$', '', lerror$f_nbr)  
+                                                                  #remove last 2 chars
 
 lerror <- lerror %>% 
   mutate(lift_id = as.character(lift_id)) %>%
   mutate(f_nbr = as.factor(f_nbr)) %>%
   mutate(report_desc = as.character(report_desc))
 
-##lerror: lift_id, f_nbr, report_desc, postal_code, date 
+# variables: lift_id, f_nbr, report_desc, postal_code, date 
 
 
-# lift --------------------------------------------------------------------
+##############-----------------  LIFT
 
-lift <- read.csv("Lifts Oct17.csv")
+lift <- read.csv("LMD Data/Lifts Oct17.csv")
+lift_full <- read.csv("LMD Data/Lifts Oct17.csv")
 
 keepcol <- c("lift_id", "make_code", "mco_id", "building_id", "landings", "speed", "commission_date", "load_capacity", "person_capacity",
              "drive_type", "car_control_1", "car_control_2", "dvr_type")
@@ -82,20 +85,17 @@ lift <- lift %>%
   mutate(car_control_1 = as.factor(car_control_1)) %>%
   mutate(car_control_2 = as.factor(car_control_2))
 
-##lift: lift_id, mco_id, building_id, lmd_comm_date, landings, speed, commission_date, load_capacity, person_capacity,
+# variables: lift_id, mco_id, building_id, lmd_comm_date, landings, speed, commission_date, load_capacity, person_capacity,
 #drive_type, storey, car_control_1, car_control_2, dvr_type
 
 
 
-# building ----------------------------------------------------------------
+##############----------------- BUILDING
 
-building <- read.csv("Buildings Oct17.csv")
+building <- read.csv("LMD Data/Buildings Oct17.csv")
 
 keepcol2 <- c("building_id", "town_council_code", "storey", "building_type", "building_date", "total_dwell_unit")
 building <- building[, names(building) %in% keepcol2]
-
-# mtcars %>% select(wt, gear, everything()) 
-# --> shift "wt", "gear" to left and everything else to the right
 
 building <- building %>%
   mutate(building_id = as.character(building_id)) %>%
@@ -107,12 +107,16 @@ building <- building %>%
 # building: building_id, town_council_code, storey, building_type, building_date, total_dwell_unit
 
 
+
+
+
+
 # Feature engineering wrt time ----------------------------------------------------------
 
 faultdesc <- faultdesc[, !names(faultdesc) %in% c("Chronic.Lifts", "Description")]
 lerror_faultdesc <- lerror %>% 
   left_join(faultdesc, by = "f_nbr") %>%
-  filter(Remarks == "Breakdown") #TAKE ONLY BREAKDOWN RESULTS. 
+  filter(Remarks == "Breakdown") 
 
 lerror_faultdesc$breakdown <- ifelse(lerror_faultdesc$Remarks=="Breakdown", 1, 0) 
 
@@ -141,14 +145,17 @@ prejoin <- lerror_faultdesc %>%
   arrange(lift_id, f_date) %>%
   mutate(hist_count = cumsum(breakdown)) # 4) no. days from previous breakdown     
 
+# 5) average days it takes for a breakdown to occur from commission to the fault date (lower = bad) 
 prejoin <- prejoin %>% 
-  mutate(freq = as.numeric((f_date - min(f_date))/hist_count)) # 5) frequency of breakdown ie. time it takes for a breakdown to occur
+  mutate(freq = as.numeric((f_date - min(f_date))/hist_count)) 
 
 # Y2 = BD in next 7 days (y/n)
 prejoin <- prejoin %>% 
   mutate(sevendays = ifelse((lead(f_date)-f_date)<8 & (lead(f_date)-f_date)>0, 1, 0))
 
-
+# Remove prejoin lifts which do not appear in lifts oct 17 table"
+uniquelift<- unique(lift$lift_id)
+prejoin2 <- prejoin[prejoin$lift_id %in% uniquelift, ]
 
 # Joining together  -------------------------------------------------------------
 
@@ -157,26 +164,27 @@ prejoin <- prejoin %>%
 # na.omit(alljoin) --> takes only completed rows 
 # alljoin <- alljoin %>% drop_na(landings, speed, make_code, drive_type, time, loadperpax, building_age)
 
-alljoin <- prejoin %>% 
+alljoin <- prejoin2 %>% 
   left_join(lift, by= "lift_id") %>% 
   left_join(building, by = "building_id") %>%
   left_join(company, by ="mco_id") %>%
   mutate(building_age = as.numeric(f_date - building_date))
 
 # VARIABLES: 
-  # 1) lift: lift_id, mco_id, building_id, landings, speed, commission_date, load_capacity, person_capacity,
-  #          drive_type, storey, car_control_1, car_control_2, dvr_type
-  # 2) building: building_id, town_council_code, storey, building_type, building_date, total_dwell_unit
-  # 3) company: mco_id, name 
+# 1) lift: lift_id, mco_id, building_id, landings, speed, commission_date, load_capacity, person_capacity,
+#          drive_type, storey, car_control_1, car_control_2, dvr_type
+# 2) building: building_id, town_council_code, storey, building_type, building_date, total_dwell_unit
+# 3) company: mco_id, name 
 
 # pax per landing
 alljoin <- alljoin %>%
   mutate(unitsperlanding = total_dwell_unit/landings)
 
 # prepare data for modeling
-alljoin2 <- alljoin[, -which(names(alljoin) %in% c("mco_id","car_control_2","days_nextbd","f_date","building_date","f_time","comm_date","building_id","f_nbr","breakdown","lift_id", "rn", "insert_date", "report_desc", "Remarks", "building_type"))]
-alljoin2 <- alljoin2 %>% 
-  select(sevendays, everything()) %>%
+alljoin_train <- alljoin[, -which(names(alljoin) %in% c("mco_id", "car_control_1","car_control_2","days_nextbd","f_date","building_date","f_time","comm_date","building_id","f_nbr","breakdown","lift_id", "rn", "insert_date", "report_desc", "Remarks", "building_type", "town_council_code", "storey", "f_day", "f_hour", "f_mth"))]
+
+alljoin_train <- alljoin_train %>% 
+  select(sevendays, everything()) %>%  # select sevendays as first col, then everything after
   mutate(sevendays = as.factor(sevendays)) %>%
   rename(mco_name = short_name) 
 
@@ -186,17 +194,18 @@ alljoin2 <- alljoin2 %>%
 ## Preparing training data  -------------------------------------------------
 
 # jumble up the data
-rows <- sample(nrow(alljoin2))
-alljoin2 <- alljoin2[rows,]
-alljoin2 <- na.omit(alljoin2)
+# rows <- sample(nrow(alljoin_train))
+# alljoin_train <- alljoin_train[rows,]
+# alljoin_train <- na.omit(alljoin_train)
 #levels(alljoin2$sevendays) <- make.names(levels(factor(alljoin2$sevendays)))
 
 # 70/30 split
 set.seed(42)
-split <- round(nrow(alljoin2) * .7)
-train <- alljoin2[1:split,]
-test <- alljoin2[(split+1):nrow(alljoin2),]
-train_small <- sample_frac(train, 0.1)
+alljoin_sampled <- sample_frac(alljoin_train, 0.1)
+alljoin_sampled <- na.omit(alljoin_sampled)
+split <- round(nrow(alljoin_sampled) * .7)
+train <- alljoin_sampled[1:split,]
+test <- alljoin_sampled[(split+1):nrow(alljoin_sampled),]
 
 # Downsampling
 set.seed(1103)
@@ -208,7 +217,16 @@ set.seed(1103)
 smote_train <- SMOTE(sevendays ~ ., data = train)
 table(smote_train$sevendays)
 
+
+
 ## Modeling ----------------------------------------------------------------
+
+glm.fit <- glm(sevendays ~., data = train, family = binomial)
+summary(glm.fit)
+glm.probs = predict(glm.fit, type = "response") 
+glm.probs[1:5]
+glm.pred = ifelse(glm.probs>0.5, 1, 0)
+table(glm.pred, train$sevendays)
 
 
 # Gradient boosting
@@ -237,13 +255,13 @@ colAUC(pred_prob, testlabel, plotROC = TRUE)
 # Cross validation 
 set.seed(100)
 cv <- xgb.cv(data=predictors, label=label,
-               objective = "binary:logistic",
-               subsample=.63, 
-               eta=0.1,
-               nrounds=100,
-               nfold = 5,
-               
-               eval_metric = "auc")
+             objective = "binary:logistic",
+             subsample=.63, 
+             eta=0.1,
+             nrounds=100,
+             nfold = 5,
+             
+             eval_metric = "auc")
 pred_prob <- predict(cv, data.matrix(test[, -1]))
 prediction <- as.numeric(pred_prob > 0.6)
 testlabel<- as.numeric(test[["sevendays"]])-1 
@@ -315,17 +333,17 @@ ggplot(error_df, aes(x=num_trees, y=error_rate)) + geom_line()
 
 # 1) Random Forest Modeling ----------------------------------------------------------------
 
-# Use randomForest package 
 require(randomForest)
+
 rf.train.1 <- train[, -1]
 rf.label <- train[, 1]
 set.seed(1234)
-rf.1 <- randomForest(sevendays~., train_small, importance = TRUE, ntree = 200)
+rf.1 <- randomForest(sevendays~., train, importance = TRUE, ntree = 200)
 rf.1
 varImpPlot(rf.1) #speed has no predictive power. prolly due to uneven distribution  
 
-# Use Caret package
 require(caret)
+
 set.seed(2348)
 cv.10.folds <- createMultiFolds(rf.label, k = 10, times = 10)
 table(rf.label)
@@ -357,10 +375,12 @@ date_breakdown <- prejoin %>%
 require(caret)
 glm_model <- glm(sevendays~., family = "binomial", alljoin2)
 p <- predict(glm_model, test, type= "response")
-p_class <- ifelse(p>0.5, "BD", "OK") #threshold: 0.1 means high true positive and 
-#                     high false positive
-#threshold: 0.9 means low true positive and 
-#                     low false positive
+p_class <- ifelse(p>0.5, "BD", "OK") #threshold: 0.1 means high true positive and high false positive
+
+
+
+
+
 
 
 library(doParallel)
